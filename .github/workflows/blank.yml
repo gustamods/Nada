@@ -1,0 +1,150 @@
+name: Build libloadgame.so (do ZIP)
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_name:
+        description: "Nome do ZIP na raiz do repo"
+        required: false
+        default: "projetozumbi.zip"
+      abi:
+        description: "ABI"
+        required: false
+        default: "arm64-v8a"
+      disable_managed:
+        description: "Build de controle sem IL2CPP (true/false)"
+        required: false
+        default: "false"
+  push:
+    paths:
+      - "*.zip"
+
+permissions:
+  contents: read
+
+env:
+  NDK_VERSION: "27.2.12479018"
+  NDK_ZIP: "android-ndk-r27c-linux.zip"
+  NDK_FOLDER: "android-ndk-r27c"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Achar o ZIP do projeto
+        id: pick
+        run: |
+          set -euo pipefail
+          ZIP="${{ github.event.inputs.zip_name }}"
+          if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
+            ZIP="$(ls -1 *.zip 2>/dev/null | head -n1 || true)"
+          fi
+          if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
+            echo "::error::Nenhum .zip na raiz do repositorio"; exit 1
+          fi
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "Usando: $ZIP"
+
+      - name: Instalar NDK
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fL --retry 3 "https://dl.google.com/android/repository/${NDK_ZIP}" -o ndk.zip
+          unzip -q ndk.zip
+          echo "ANDROID_NDK_HOME=$RUNNER_TEMP/${NDK_FOLDER}" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/${NDK_FOLDER}" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/${NDK_FOLDER}/ndk-build" --version
+
+      - name: Extrair o ZIP (inclusive zip dentro de zip)
+        id: src
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/src"; mkdir -p "$RUNNER_TEMP/src"
+          unzip -q "${{ steps.pick.outputs.zip }}" -d "$RUNNER_TEMP/src"
+          for inner in $(find "$RUNNER_TEMP/src" -name '*.zip' -type f); do
+            echo "Abrindo zip interno: $inner"
+            unzip -q -o "$inner" -d "$RUNNER_TEMP/src" || true
+          done
+          MK="$(find "$RUNNER_TEMP/src" -name Android.mk -type f | head -n1)"
+          if [ -z "$MK" ]; then
+            echo "::error::Android.mk nao encontrado dentro do ZIP"
+            find "$RUNNER_TEMP/src" -maxdepth 3 -type d | sed 's/^/  /'
+            exit 1
+          fi
+          JNI="$(dirname "$MK")"
+          ROOT="$(dirname "$JNI")"
+          echo "jni=$JNI" >> "$GITHUB_OUTPUT"
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "Projeto: $ROOT"
+          ls -la "$JNI"
+
+      - name: Limpar binarios antigos do pacote
+        run: |
+          set -euo pipefail
+          ROOT="${{ steps.src.outputs.root }}"
+          rm -rf "$ROOT/libs" "$ROOT/obj"
+          found=$(find "$ROOT" -name 'libloadgame.so' -type f | wc -l)
+          echo "libloadgame.so pre-existentes removidas: $found"
+          find "$ROOT" -name 'libloadgame*.so' -type f -print
+
+      - name: ndk-build
+        run: |
+          set -euo pipefail
+          FLAGS=""
+          if [ "${{ github.event.inputs.disable_managed }}" = "true" ]; then
+            FLAGS="-DGSTX_DISABLE_MANAGED"
+          fi
+          ABI="${{ github.event.inputs.abi }}"
+          if [ -z "$ABI" ]; then ABI="arm64-v8a"; fi
+          set -o pipefail
+          "$ANDROID_NDK_HOME/ndk-build" \
+            -C "${{ steps.src.outputs.root }}" \
+            NDK_PROJECT_PATH="${{ steps.src.outputs.root }}" \
+            APP_BUILD_SCRIPT="${{ steps.src.outputs.jni }}/Android.mk" \
+            APP_ABI="$ABI" \
+            APP_CPPFLAGS="$FLAGS" \
+            -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Empacotar a .so
+        id: pack
+        run: |
+          set -euo pipefail
+          ROOT="${{ steps.src.outputs.root }}"
+          SO="$(find "$ROOT" -path '*libs*' -name '*.so' -type f | head -n1)"
+          if [ -z "$SO" ]; then SO="$(find "$ROOT" -name '*.so' -type f | head -n1)"; fi
+          if [ -z "$SO" ]; then
+            echo "::error::ndk-build nao gerou nenhuma .so"
+            tail -n 100 "$GITHUB_WORKSPACE/build.log"
+            exit 1
+          fi
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp "$SO" "$GITHUB_WORKSPACE/dist/libloadgame.so"
+          cd "$GITHUB_WORKSPACE/dist"
+          sha256sum libloadgame.so | tee SHA256SUMS.txt
+          file libloadgame.so
+          ls -l libloadgame.so
+
+      - name: Resumo
+        run: |
+          {
+            echo "### libloadgame.so gerada"
+            echo ""
+            echo '```'
+            cat "$GITHUB_WORKSPACE/dist/SHA256SUMS.txt"
+            echo '```'
+            echo ""
+            echo "Baixe em **Artifacts** abaixo (libloadgame-${{ github.run_number }})."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libloadgame-${{ github.run_number }}
+          path: |
+            dist/libloadgame.so
+            dist/SHA256SUMS.txt
+            build.log
+          if-no-files-found: error
+          retention-days: 30
