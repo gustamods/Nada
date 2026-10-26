@@ -8,6 +8,7 @@ on:
         required: true
         type: boolean
         default: true
+
   push:
     branches: [main, master]
     paths:
@@ -21,6 +22,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+
     steps:
       - name: Baixar arquivos do repositorio
         uses: actions/checkout@v4
@@ -33,20 +35,29 @@ jobs:
       - name: Abrir o ZIP do projeto
         run: |
           set -euo pipefail
+
           test -s gustaxy-source.zip
+
           mkdir -p workspace
           unzip -oq gustaxy-source.zip -d workspace
+
           test -f workspace/tools/patch/build_patch.py
           test -f workspace/patch_inputs/DummyDll.zip
 
       - name: Instalar somente as dependencias do montador
-        run: python -m pip install --disable-pip-version-check -r workspace/tools/patch/requirements.txt
+        run: |
+          python -m pip install \
+            --disable-pip-version-check \
+            -r workspace/tools/patch/requirements.txt
 
       - name: Montar bytecode IFix, validar e empacotar os bundles
         run: |
           set -euo pipefail
+
           cd workspace
+
           python tools/patch/build_patch.py
+
           test -s build-output/nome-animado/report.json
           test -s build-output/nome-animado/fileinfo
           test -s build-output/somente-cor/report.json
@@ -65,8 +76,14 @@ jobs:
       - name: Empacotar o fonte com os assets atualizados
         run: |
           set -euo pipefail
+
           cd workspace
-          zip -qr ../gustaxy-fonte-atualizado.zip . -x 'build-output/*' '*/__pycache__/*' '.gradle/*' 'app/build/*'
+
+          zip -qr ../gustaxy-fonte-atualizado.zip . \
+            -x 'build-output/*' \
+               '*/__pycache__/*' \
+               '.gradle/*' \
+               'app/build/*'
 
       - name: Disponibilizar fonte atualizado
         uses: actions/upload-artifact@v4
@@ -89,16 +106,34 @@ jobs:
 
       - name: Instalar SDK, NDK e CMake do projeto
         if: github.event_name != 'workflow_dispatch' || inputs.build_apk
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264" "cmake;3.22.1"
+        run: |
+          set -euo pipefail
+
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;26.3.11579264" \
+            "cmake;3.22.1"
 
       - name: Compilar APK debug de verdade
         if: github.event_name != 'workflow_dispatch' || inputs.build_apk
         run: |
           set -euo pipefail
+
           cd workspace
+
           chmod +x gradlew
-          ./gradlew :app:assembleDebug --no-daemon --stacktrace
-          test -n "$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
+
+          ./gradlew :app:assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+          test -n "$(find app/build/outputs/apk/debug \
+            -name '*.apk' \
+            -print \
+            -quit)"
 
       - name: Disponibilizar APK
         if: github.event_name != 'workflow_dispatch' || inputs.build_apk
