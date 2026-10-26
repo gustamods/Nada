@@ -1,150 +1,121 @@
-name: Build libloadgame.so (do ZIP)
+name: Gustaxy - montar patch e compilar APK
 
 on:
   workflow_dispatch:
     inputs:
-      zip_name:
-        description: "Nome do ZIP na raiz do repo"
-        required: false
-        default: "projetozumbi.zip"
-      abi:
-        description: "ABI"
-        required: false
-        default: "arm64-v8a"
-      disable_managed:
-        description: "Build de controle sem IL2CPP (true/false)"
-        required: false
-        default: "false"
+      build_apk:
+        description: Compilar tambem o APK Android
+        required: true
+        type: boolean
+        default: true
   push:
+    branches: [main, master]
     paths:
-      - "*.zip"
+      - gustaxy-source.zip
+      - .github/workflows/gustaxy-build.yml
 
 permissions:
   contents: read
 
-env:
-  NDK_VERSION: "27.2.12479018"
-  NDK_ZIP: "android-ndk-r27c-linux.zip"
-  NDK_FOLDER: "android-ndk-r27c"
-
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - name: Baixar arquivos do repositorio
+        uses: actions/checkout@v4
 
-      - name: Achar o ZIP do projeto
-        id: pick
-        run: |
-          set -euo pipefail
-          ZIP="${{ github.event.inputs.zip_name }}"
-          if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
-            ZIP="$(ls -1 *.zip 2>/dev/null | head -n1 || true)"
-          fi
-          if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
-            echo "::error::Nenhum .zip na raiz do repositorio"; exit 1
-          fi
-          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
-          echo "Usando: $ZIP"
-
-      - name: Instalar NDK
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP"
-          curl -fL --retry 3 "https://dl.google.com/android/repository/${NDK_ZIP}" -o ndk.zip
-          unzip -q ndk.zip
-          echo "ANDROID_NDK_HOME=$RUNNER_TEMP/${NDK_FOLDER}" >> "$GITHUB_ENV"
-          echo "$RUNNER_TEMP/${NDK_FOLDER}" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/${NDK_FOLDER}/ndk-build" --version
-
-      - name: Extrair o ZIP (inclusive zip dentro de zip)
-        id: src
-        run: |
-          set -euo pipefail
-          rm -rf "$RUNNER_TEMP/src"; mkdir -p "$RUNNER_TEMP/src"
-          unzip -q "${{ steps.pick.outputs.zip }}" -d "$RUNNER_TEMP/src"
-          for inner in $(find "$RUNNER_TEMP/src" -name '*.zip' -type f); do
-            echo "Abrindo zip interno: $inner"
-            unzip -q -o "$inner" -d "$RUNNER_TEMP/src" || true
-          done
-          MK="$(find "$RUNNER_TEMP/src" -name Android.mk -type f | head -n1)"
-          if [ -z "$MK" ]; then
-            echo "::error::Android.mk nao encontrado dentro do ZIP"
-            find "$RUNNER_TEMP/src" -maxdepth 3 -type d | sed 's/^/  /'
-            exit 1
-          fi
-          JNI="$(dirname "$MK")"
-          ROOT="$(dirname "$JNI")"
-          echo "jni=$JNI" >> "$GITHUB_OUTPUT"
-          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
-          echo "Projeto: $ROOT"
-          ls -la "$JNI"
-
-      - name: Limpar binarios antigos do pacote
-        run: |
-          set -euo pipefail
-          ROOT="${{ steps.src.outputs.root }}"
-          rm -rf "$ROOT/libs" "$ROOT/obj"
-          found=$(find "$ROOT" -name 'libloadgame.so' -type f | wc -l)
-          echo "libloadgame.so pre-existentes removidas: $found"
-          find "$ROOT" -name 'libloadgame*.so' -type f -print
-
-      - name: ndk-build
-        run: |
-          set -euo pipefail
-          FLAGS=""
-          if [ "${{ github.event.inputs.disable_managed }}" = "true" ]; then
-            FLAGS="-DGSTX_DISABLE_MANAGED"
-          fi
-          ABI="${{ github.event.inputs.abi }}"
-          if [ -z "$ABI" ]; then ABI="arm64-v8a"; fi
-          set -o pipefail
-          "$ANDROID_NDK_HOME/ndk-build" \
-            -C "${{ steps.src.outputs.root }}" \
-            NDK_PROJECT_PATH="${{ steps.src.outputs.root }}" \
-            APP_BUILD_SCRIPT="${{ steps.src.outputs.jni }}/Android.mk" \
-            APP_ABI="$ABI" \
-            APP_CPPFLAGS="$FLAGS" \
-            -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
-
-      - name: Empacotar a .so
-        id: pack
-        run: |
-          set -euo pipefail
-          ROOT="${{ steps.src.outputs.root }}"
-          SO="$(find "$ROOT" -path '*libs*' -name '*.so' -type f | head -n1)"
-          if [ -z "$SO" ]; then SO="$(find "$ROOT" -name '*.so' -type f | head -n1)"; fi
-          if [ -z "$SO" ]; then
-            echo "::error::ndk-build nao gerou nenhuma .so"
-            tail -n 100 "$GITHUB_WORKSPACE/build.log"
-            exit 1
-          fi
-          mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp "$SO" "$GITHUB_WORKSPACE/dist/libloadgame.so"
-          cd "$GITHUB_WORKSPACE/dist"
-          sha256sum libloadgame.so | tee SHA256SUMS.txt
-          file libloadgame.so
-          ls -l libloadgame.so
-
-      - name: Resumo
-        run: |
-          {
-            echo "### libloadgame.so gerada"
-            echo ""
-            echo '```'
-            cat "$GITHUB_WORKSPACE/dist/SHA256SUMS.txt"
-            echo '```'
-            echo ""
-            echo "Baixe em **Artifacts** abaixo (libloadgame-${{ github.run_number }})."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - uses: actions/upload-artifact@v4
+      - name: Preparar Python
+        uses: actions/setup-python@v5
         with:
-          name: libloadgame-${{ github.run_number }}
+          python-version: '3.12'
+
+      - name: Abrir o ZIP do projeto
+        run: |
+          set -euo pipefail
+          test -s gustaxy-source.zip
+          mkdir -p workspace
+          unzip -oq gustaxy-source.zip -d workspace
+          test -f workspace/tools/patch/build_patch.py
+          test -f workspace/patch_inputs/DummyDll.zip
+
+      - name: Instalar somente as dependencias do montador
+        run: python -m pip install --disable-pip-version-check -r workspace/tools/patch/requirements.txt
+
+      - name: Montar bytecode IFix, validar e empacotar os bundles
+        run: |
+          set -euo pipefail
+          cd workspace
+          python tools/patch/build_patch.py
+          test -s build-output/nome-animado/report.json
+          test -s build-output/nome-animado/fileinfo
+          test -s build-output/somente-cor/report.json
+
+      - name: Disponibilizar assembly, fileinfo e relatorios
+        uses: actions/upload-artifact@v4
+        with:
+          name: gustaxy-patch-para-teste
           path: |
-            dist/libloadgame.so
-            dist/SHA256SUMS.txt
-            build.log
+            workspace/build-output/nome-animado/
+            workspace/build-output/somente-cor/
+            workspace/build-output/build-summary.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
+
+      - name: Empacotar o fonte com os assets atualizados
+        run: |
+          set -euo pipefail
+          cd workspace
+          zip -qr ../gustaxy-fonte-atualizado.zip . -x 'build-output/*' '*/__pycache__/*' '.gradle/*' 'app/build/*'
+
+      - name: Disponibilizar fonte atualizado
+        uses: actions/upload-artifact@v4
+        with:
+          name: gustaxy-fonte-atualizado
+          path: gustaxy-fonte-atualizado.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preparar JDK 17
+        if: github.event_name != 'workflow_dispatch' || inputs.build_apk
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Preparar Android SDK
+        if: github.event_name != 'workflow_dispatch' || inputs.build_apk
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar SDK, NDK e CMake do projeto
+        if: github.event_name != 'workflow_dispatch' || inputs.build_apk
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264" "cmake;3.22.1"
+
+      - name: Compilar APK debug de verdade
+        if: github.event_name != 'workflow_dispatch' || inputs.build_apk
+        run: |
+          set -euo pipefail
+          cd workspace
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
+          test -n "$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
+
+      - name: Disponibilizar APK
+        if: github.event_name != 'workflow_dispatch' || inputs.build_apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: gustaxy-apk-debug
+          path: workspace/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Disponibilizar logs Android em caso de erro
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gustaxy-build-diagnostico
+          path: |
+            workspace/app/build/reports/
+            workspace/build-output/build-summary.json
+          if-no-files-found: warn
+          retention-days: 7
