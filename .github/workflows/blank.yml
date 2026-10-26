@@ -46,6 +46,8 @@ jobs:
 
       - name: Instalar somente as dependencias do montador
         run: |
+          set -euo pipefail
+
           python -m pip install \
             --disable-pip-version-check \
             -r workspace/tools/patch/requirements.txt
@@ -102,7 +104,9 @@ jobs:
 
       - name: Preparar Android SDK
         if: github.event_name != 'workflow_dispatch' || inputs.build_apk
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
 
       - name: Instalar SDK, NDK e CMake do projeto
         if: github.event_name != 'workflow_dispatch' || inputs.build_apk
@@ -116,6 +120,18 @@ jobs:
             "build-tools;35.0.0" \
             "ndk;26.3.11579264" \
             "cmake;3.22.1"
+
+      - name: Verificar ferramentas Android
+        if: github.event_name != 'workflow_dispatch' || inputs.build_apk
+        run: |
+          set -euo pipefail
+
+          sdkmanager --list_installed
+
+          test -d "${ANDROID_SDK_ROOT}/platforms/android-35"
+          test -d "${ANDROID_SDK_ROOT}/build-tools/35.0.0"
+          test -d "${ANDROID_SDK_ROOT}/ndk/26.3.11579264"
+          test -d "${ANDROID_SDK_ROOT}/cmake/3.22.1"
 
       - name: Compilar APK debug de verdade
         if: github.event_name != 'workflow_dispatch' || inputs.build_apk
@@ -151,6 +167,7 @@ jobs:
           name: gustaxy-build-diagnostico
           path: |
             workspace/app/build/reports/
+            workspace/app/build/outputs/logs/
             workspace/build-output/build-summary.json
           if-no-files-found: warn
           retention-days: 7
